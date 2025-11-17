@@ -4,25 +4,47 @@ import torchaudio.transforms as T
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import models
 import tempfile
+import os
+import onnxruntime as ort
 from models import CRNNWithAttn
 
 # Create the model and put it on the GPU if available
-myModel = CRNNWithAttn()
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-myModel = myModel.to(device)
 
-# Load your model
-@st.cache_resource
-def load_model():
-    myModel.load_state_dict(torch.load('./models/best_model10.pth', map_location=device))
-    myModel.eval()
-    return myModel
+st.cache_resource
+def load_or_export_onnx():
+    pth_path = "./models/best_model10.pth"
+    onnx_path = "./models/model.onnx"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = load_model()
+    # If ONNX doesn't exist, export from PyTorch
+    if not os.path.exists(onnx_path):
+        st.write("Exporting ONNX model (first-time setup)...")
+        model = CRNNWithAttn().to(device)
+        model.load_state_dict(torch.load(pth_path, map_location=device))
+        model.eval()
 
-# ImageNet normalization stats (for 1 channel input)
+        dummy_input = torch.randn(1, 2, 64, 321).to(device)
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            export_params=True,
+            opset_version=13,
+            do_constant_folding=True,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}},
+        )
+        st.success("Model exported to ONNX format!")
+
+    # Load ONNX runtime session
+    ort_session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    return ort_session
+
+onnx_session = load_or_export_onnx()
+
+# ImageNet normalization stats
 imagenet_mean = torch.tensor([0.485]).view(1, 1, 1, 1)
 imagenet_std = torch.tensor([0.229]).view(1, 1, 1, 1)
 
